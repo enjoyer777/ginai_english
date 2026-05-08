@@ -32,13 +32,27 @@ jobs:
           fi
           chmod 600 ~/.ssh/known_hosts
 
+      - name: Diagnose secrets (lengths only, no values)
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+        run: |
+          echo "VPS_USER length: ${#VPS_USER}"
+          echo "VPS_HOST length: ${#VPS_HOST}"
+          echo "DEPLOY_PATH length: ${#DEPLOY_PATH}"
+          echo "DEPLOY_PATH starts with /: $(case "$DEPLOY_PATH" in /*) echo yes;; *) echo no;; esac)"
+          echo "DEPLOY_PATH ends with /: $(case "$DEPLOY_PATH" in */) echo yes;; *) echo no;; esac)"
+          # Sanity ssh — pwd + ls of deploy dir
+          ssh "$VPS_USER@$VPS_HOST" "pwd; whoami; ls -la '$DEPLOY_PATH' || echo 'DEPLOY_PATH not listable'"
+
       - name: Sync code to VPS
         env:
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
           DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
         run: |
-          rsync -az --delete \
+          rsync -azv --delete \
             --exclude='.git/' \
             --exclude='.github/' \
             --exclude='.env' \
