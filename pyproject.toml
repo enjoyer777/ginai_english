@@ -1,0 +1,52 @@
+[project]
+name = "school-english-pro-bot"
+version = "1.0.0"
+description = "AI-ассистент для онлайн-школы английского school_english_pro (Telegram + OpenAI + Yandex.Disk + Bitrix24)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram>=3.13.0",
+    "aiosqlite>=0.20.0",
+    "httpx>=0.27.0",
+    "loguru>=0.7.2",
+    "openai>=1.40.0",
+    "openpyxl>=3.1.5",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.5.0",
+    "python-dotenv>=1.0.1",
+    "tzdata>=2024.1; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
