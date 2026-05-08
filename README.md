@@ -107,19 +107,44 @@ python -m app.main
 
 ## Запуск на VPS через Docker
 
+Авто-рестарт при сбоях — `restart: unless-stopped` в `docker-compose.yml`. Состояние и логи лежат в `./data` (mount внутрь контейнера).
+
+### CI/CD: GitHub Actions → VPS
+
+В репозитории настроен workflow [.github/workflows/deploy.yml](.github/workflows/deploy.yml):
+- триггер: push в `main` или ручной запуск через `workflow_dispatch`;
+- что делает: `rsync` кодовой базы на VPS (без `.env` и `./data`) → `docker compose up -d --build` → выводит последние логи бота.
+
+**Требуемые GitHub Secrets** (в Settings → Secrets and variables → Actions):
+
+| Secret | Значение |
+|---|---|
+| `VPS_HOST` | IP или DNS-имя VPS |
+| `VPS_USER` | SSH-пользователь на VPS (с правом на докер) |
+| `VPS_SSH_PRIVATE_KEY` | приватный SSH-ключ (полный текст, включая BEGIN/END-маркеры) |
+| `VPS_KNOWN_HOSTS` | вывод `ssh-keyscan -H <host>` (опционально — без него CI делает keyscan на лету) |
+| `VPS_DEPLOY_PATH` | абсолютный путь на VPS, например `/home/enjoyer777/ginai_english` |
+
+**Bootstrap VPS** (один раз перед первым деплоем):
+
 ```bash
-# На VPS
-git clone git@github.com:<your-account>/school_english_pro_bot.git
-cd school_english_pro_bot
+ssh <user>@<host>
+mkdir -p /home/<user>/ginai_english/data
+cd /home/<user>/ginai_english
+# скопировать .env.example в .env и заполнить
+nano .env
+```
 
-cp .env.example .env
-nano .env     # заполнить секреты
+После этого любой push в `main` → автодеплой. Если `.env` пустой/отсутствует, шаг `Build and restart Docker` упадёт с понятным сообщением — поправьте `.env` и перезапустите workflow вручную.
 
+### Запуск вручную (без CI)
+
+```bash
+ssh <user>@<host>
+cd /home/<user>/ginai_english
 docker compose up -d --build
 docker compose logs -f bot
 ```
-
-Авто-рестарт при сбоях — `restart: unless-stopped` в `docker-compose.yml`. Состояние и логи лежат в `./data` (mount внутрь контейнера).
 
 ---
 

@@ -1,0 +1,81 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: vps-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Sync code to VPS
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+        run: |
+          rsync -az --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.env' \
+            --exclude='data/' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            --exclude='.venv/' \
+            --exclude='venv/' \
+            --exclude='test_data/' \
+            --exclude='.pytest_cache/' \
+            --exclude='.mypy_cache/' \
+            --exclude='.ruff_cache/' \
+            --exclude='*.egg-info/' \
+            ./ "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/"
+
+      - name: Build and restart Docker
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+        run: |
+          ssh "$VPS_USER@$VPS_HOST" bash -se <<EOF
+            set -euo pipefail
+            cd "$DEPLOY_PATH"
+            if [ ! -f .env ]; then
+              echo "::error::.env missing on VPS at $DEPLOY_PATH/.env. Bootstrap it once with the values from .env.example."
+              exit 1
+            fi
+            docker compose up -d --build
+            docker compose ps
+          EOF
+
+      - name: Show recent logs
+        if: always()
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+        run: |
+          ssh "$VPS_USER@$VPS_HOST" "cd '$DEPLOY_PATH' && docker compose logs --tail=40 bot 2>&1 || true"
