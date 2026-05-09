@@ -6,6 +6,10 @@
 # Xray client config — содержит UUID/keys от non-RU VPS (см. xray-config.example.json)
 xray-config.json
 
+# Локальные docker-compose оверрайды (VPS-специфичные сайдкары)
+docker-compose.override.yml
+docker-compose.override.yaml
+
 # Python
 __pycache__/
 *.py[cod]
