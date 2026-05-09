@@ -7,6 +7,12 @@ services:
     env_file: .env
     volumes:
       - ./data:/data
+    # На VPS провайдер фильтрует часть IP Telegram. DNS отдаёт заблокированный
+    # 149.154.166.110, а 149.154.167.220 (DC4) работает. Зашиваем рабочий IP в
+    # /etc/hosts контейнера, чтобы избежать DNS lottery.
+    # Если Telegram сменит IP DC4 — обновить.
+    extra_hosts:
+      - "api.telegram.org:149.154.167.220"
     logging:
       driver: json-file
       options:
