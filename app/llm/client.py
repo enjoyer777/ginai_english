@@ -17,6 +17,18 @@ from app.llm.tools import TOOLS
 ToolHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
+def _safe_proxy_repr(url: str) -> str:
+    """Прячет пароль из URL прокси для лога."""
+    if "@" not in url or "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    creds, hostpart = rest.rsplit("@", 1)
+    if ":" in creds:
+        user, _ = creds.split(":", 1)
+        return f"{scheme}://{user}:***@{hostpart}"
+    return f"{scheme}://***@{hostpart}"
+
+
 class LLMClient:
     def __init__(self) -> None:
         # OPENAI_PROXY: socks5://user:pass@host:port или http://...
@@ -25,6 +37,7 @@ class LLMClient:
         proxy = (os.getenv("OPENAI_PROXY") or "").strip() or None
         http_client: httpx.AsyncClient | None = None
         if proxy:
+            logger.info("Using outbound proxy for OpenAI: {}", _safe_proxy_repr(proxy))
             http_client = httpx.AsyncClient(proxy=proxy, timeout=60.0)
         self._client = AsyncOpenAI(
             api_key=settings.openai_api_key.get_secret_value(),
