@@ -42,6 +42,7 @@ jobs:
             --exclude='.git/' \
             --exclude='.github/' \
             --exclude='.env' \
+            --exclude='xray-config.json' \
             --exclude='data/' \
             --exclude='__pycache__/' \
             --exclude='*.pyc' \

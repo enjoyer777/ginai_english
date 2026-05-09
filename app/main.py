@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from loguru import logger
 
@@ -31,9 +33,18 @@ async def main() -> None:
             len(snapshot.schedules),
         )
 
+    # Опциональный прокси к api.telegram.org. Используется, если RU-провайдер
+    # фильтрует Telegram. Поддерживает socks5://, socks4://, http://.
+    # Пустая переменная или её отсутствие → прямое соединение.
+    telegram_proxy = (os.getenv("TELEGRAM_PROXY") or "").strip() or None
+    if telegram_proxy:
+        logger.info("Using outbound proxy for Telegram: {}", _safe_proxy_repr(telegram_proxy))
+    session = AiohttpSession(proxy=telegram_proxy) if telegram_proxy else AiohttpSession()
+
     bot = Bot(
         token=settings.tg_bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=session,
     )
     dp = Dispatcher()
     dp.include_router(router)
@@ -45,6 +56,18 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await bot.session.close()
+
+
+def _safe_proxy_repr(url: str) -> str:
+    """Прячет пароль из URL прокси для лога (socks5://user:pass@host:port → socks5://user:***@host:port)."""
+    if "@" not in url or "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    creds, hostpart = rest.rsplit("@", 1)
+    if ":" in creds:
+        user, _ = creds.split(":", 1)
+        return f"{scheme}://{user}:***@{hostpart}"
+    return f"{scheme}://***@{hostpart}"
 
 
 if __name__ == "__main__":

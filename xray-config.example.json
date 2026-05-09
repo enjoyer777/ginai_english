@@ -1,0 +1,85 @@
+{
+  "_comment_": [
+    "Шаблон Xray-клиент конфига для сайдкара бота.",
+    "Скопируй в xray-config.json и подставь реальные значения от своего non-RU VPS.",
+    "xray-config.json лежит в .gitignore — реальные UUID/ключи в репозиторий не попадут.",
+    "Здесь дан пример VLESS+Reality. Для VMess/Trojan/Shadowsocks — поменяй блок 'outbounds[0]'",
+    "по аналогии со своим клиентским конфигом (тот, которым ты подключаешься с ноута/телефона)."
+  ],
+
+  "log": { "loglevel": "warning" },
+
+  "inbounds": [
+    {
+      "tag": "socks-in",
+      "listen": "0.0.0.0",
+      "port": 1080,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": false
+      }
+    }
+  ],
+
+  "outbounds": [
+    {
+      "tag": "proxy",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "non-ru-vps.example.com",
+            "port": 443,
+            "users": [
+              {
+                "id": "ВСТАВЬ_СВОЙ_UUID_ПОЛЬЗОВАТЕЛЯ",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.microsoft.com",
+          "fingerprint": "chrome",
+          "publicKey": "ВСТАВЬ_PUBLIC_KEY_REALITY",
+          "shortId": "ВСТАВЬ_SHORT_ID"
+        }
+      }
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "_comment": "Только Telegram идёт через прокси. Всё остальное (Я.Диск, Битрикс, OpenAI) — напрямую с RU VPS, не нагружаем non-RU и не добавляем латентность.",
+        "type": "field",
+        "domain": [
+          "domain:telegram.org",
+          "domain:t.me",
+          "domain:telegra.ph"
+        ],
+        "outboundTag": "proxy"
+      },
+      {
+        "type": "field",
+        "outboundTag": "direct",
+        "network": "tcp,udp"
+      }
+    ]
+  }
+}

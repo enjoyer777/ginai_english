@@ -17,6 +17,7 @@ COPY pyproject.toml README.md ./
 # Ставим только runtime-зависимости (без dev)
 RUN pip install \
     "aiogram>=3.13.0" \
+    "aiohttp-socks>=0.10.0" \
     "aiosqlite>=0.20.0" \
     "httpx>=0.27.0" \
     "loguru>=0.7.2" \

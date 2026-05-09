@@ -11,6 +11,8 @@ services:
     # 149.154.166.110, а 149.154.167.220 (DC4) работает. Зашиваем рабочий IP в
     # /etc/hosts контейнера, чтобы избежать DNS lottery.
     # Если Telegram сменит IP DC4 — обновить.
+    # При включении прокси через xray-сайдкар (см. ниже) этот хак не мешает,
+    # но и не нужен — можно закомментировать.
     extra_hosts:
       - "api.telegram.org:149.154.167.220"
     logging:
@@ -18,3 +20,26 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+
+  # === Опциональный сайдкар для обхода блокировок ===
+  # Запускать только когда extra_hosts перестанет помогать (т.е. провайдер
+  # заблокирует все Telegram DC). Активация:
+  #   1) скопируй xray-config.example.json → xray-config.json
+  #      и заполни своими VLESS/Trojan/etc реквизитами от non-RU VPS;
+  #   2) раскомментируй блок ниже и depends_on у bot;
+  #   3) в .env выстави TELEGRAM_PROXY=socks5://xray:1080;
+  #   4) docker compose up -d --build.
+  # xray:
+  #   image: ghcr.io/xtls/xray-core:latest
+  #   container_name: school-english-pro-xray
+  #   restart: unless-stopped
+  #   command: ["run", "-c", "/etc/xray/config.json"]
+  #   volumes:
+  #     - ./xray-config.json:/etc/xray/config.json:ro
+  #   expose:
+  #     - "1080"
+  #   logging:
+  #     driver: json-file
+  #     options:
+  #       max-size: "5m"
+  #       max-file: "3"

@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Xray client config — содержит UUID/keys от non-RU VPS (см. xray-config.example.json)
+xray-config.json
+
 # Python
 __pycache__/
 *.py[cod]
