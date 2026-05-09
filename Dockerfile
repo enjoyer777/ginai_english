@@ -7,6 +7,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Prefer IPv4 over IPv6 in getaddrinfo (VPS has no IPv6 connectivity,
+# but DNS returns AAAA for api.telegram.org → blocks until timeout).
+COPY gai.conf /etc/gai.conf
+
 # Сначала только manifest — кэш слоёв при пересборке
 COPY pyproject.toml README.md ./
 

@@ -51,7 +51,7 @@ async def fetch_kb_xlsx() -> bytes:
     }
     params = {"path": settings.yandex_disk_file_path}
 
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=True) as client:
         # Шаг 1: получить временную ссылку
         r = await client.get(
             f"{YANDEX_API_BASE}/resources/download", headers=headers, params=params
