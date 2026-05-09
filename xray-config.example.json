@@ -66,12 +66,15 @@
     "domainStrategy": "AsIs",
     "rules": [
       {
-        "_comment": "Только Telegram идёт через прокси. Всё остальное (Я.Диск, Битрикс, OpenAI) — напрямую с RU VPS, не нагружаем non-RU и не добавляем латентность.",
+        "_comment": "Через non-RU VPS только то, что либо режется RU-провайдером (Telegram), либо блокируется на той стороне за RU-IP (OpenAI). Я.Диск и Битрикс — напрямую с RU VPS, не нагружаем non-RU и не добавляем латентность.",
         "type": "field",
         "domain": [
           "domain:telegram.org",
           "domain:t.me",
-          "domain:telegra.ph"
+          "domain:telegra.ph",
+          "domain:openai.com",
+          "domain:oaistatic.com",
+          "domain:oaiusercontent.com"
         ],
         "outboundTag": "proxy"
       },

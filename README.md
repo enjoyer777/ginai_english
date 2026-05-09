@@ -146,23 +146,32 @@ docker compose up -d --build
 docker compose logs -f bot
 ```
 
-### Обход блокировок Telegram через Xray (опционально)
+### Прокси через Xray для обхода блокировок (важно при размещении в РФ)
 
-По умолчанию бот ходит к `api.telegram.org` напрямую. У части RU-провайдеров этот хост частично режется по IP — на этот случай в [docker-compose.yml](docker-compose.yml) уже зашит `extra_hosts` с рабочим IP DC4 (`149.154.167.220`).
+Бот ходит к двум сервисам, которые с RU-VPS работают плохо или вообще не работают:
 
-Если **все IP Telegram перестанут проходить** — есть готовый fallback через Xray-сайдкар, который терминирует SOCKS5 локально и заворачивает только Telegram-трафик в твой существующий не-RU VPS (Я.Диск / Битрикс / OpenAI продолжают идти напрямую):
+| Сервис | Что не так на RU-IP | Лечение |
+|---|---|---|
+| `api.telegram.org` | RU-провайдер режет часть IP-адресов Telegram | По умолчанию: `extra_hosts` в [docker-compose.yml](docker-compose.yml) пиннит DC4. Если перестанет помогать — `TELEGRAM_PROXY` |
+| `api.openai.com` | OpenAI возвращает `403 unsupported_country_region_territory` | **`OPENAI_PROXY` обязателен**, иначе LLM-ответы падают |
+
+Готовый fallback — Xray-сайдкар: терминирует SOCKS5 локально и тоннелирует только нужные домены через твой не-RU VPS, остальное (Я.Диск, Битрикс) — напрямую.
+
+**Включение** (один раз):
 
 1. Скопируй [`xray-config.example.json`](xray-config.example.json) → `xray-config.json` на VPS, подставь UUID/`publicKey`/`shortId` от своего Xray-сервера (или замени блок `outbounds[0]` на свой VLESS/Trojan/VMess клиент-конфиг).
 2. Раскомментируй секцию `xray:` в `docker-compose.yml`.
 3. В `.env` на VPS добавь:
    ```env
    TELEGRAM_PROXY=socks5://xray:1080
+   OPENAI_PROXY=socks5://xray:1080
    ```
+   `OPENAI_PROXY` — обязательно при RU-хостинге; `TELEGRAM_PROXY` — пока работает `extra_hosts`, можно не задавать (тогда бот пойдёт в TG напрямую).
 4. Перезапусти: `docker compose up -d --build`.
 
-Файл `xray-config.json` в `.gitignore` и исключён из rsync — реальные ключи в репозиторий не утекают и не перетираются деплоем.
+Файл `xray-config.json` лежит в `.gitignore` и исключён из rsync — реальные ключи в репозиторий не утекают и не перетираются деплоем.
 
-Чтобы выключить прокси — стереть `TELEGRAM_PROXY` в `.env` и перезапустить, сайдкар можно оставить запущенным или потушить через `docker compose stop xray`.
+Выключить прокси — стереть `TELEGRAM_PROXY`/`OPENAI_PROXY` в `.env` и перезапустить; сайдкар можно потушить через `docker compose stop xray`.
 
 ---
 

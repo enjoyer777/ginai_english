@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import httpx
 from loguru import logger
 from openai import AsyncOpenAI
 
@@ -17,7 +19,17 @@ ToolHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
 class LLMClient:
     def __init__(self) -> None:
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key.get_secret_value())
+        # OPENAI_PROXY: socks5://user:pass@host:port или http://...
+        # Нужно, потому что OpenAI отдаёт 403 unsupported_country_region_territory
+        # для запросов с RU-IP. Прокси через non-RU выходной узел снимает блок.
+        proxy = (os.getenv("OPENAI_PROXY") or "").strip() or None
+        http_client: httpx.AsyncClient | None = None
+        if proxy:
+            http_client = httpx.AsyncClient(proxy=proxy, timeout=60.0)
+        self._client = AsyncOpenAI(
+            api_key=settings.openai_api_key.get_secret_value(),
+            http_client=http_client,
+        )
 
     async def chat(
         self,

@@ -19,7 +19,7 @@ RUN pip install \
     "aiogram>=3.13.0" \
     "aiohttp-socks>=0.10.0" \
     "aiosqlite>=0.20.0" \
-    "httpx>=0.27.0" \
+    "httpx[socks]>=0.27.0" \
     "loguru>=0.7.2" \
     "openai>=1.40.0" \
     "openpyxl>=3.1.5" \
