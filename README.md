@@ -183,6 +183,28 @@ pytest
 
 Юнит-тесты в `tests/unit/` — рабочие часы, дедуп сделок, парсинг xlsx, кэш. Ручные сценарии приёмки — [tests/manual_test_cases.md](tests/manual_test_cases.md).
 
+## Сброс памяти бота (для отладки и повторных прогонов)
+
+CLI-скрипт [app/scripts/reset_memory.py](app/scripts/reset_memory.py) запускается внутри контейнера. С VPS:
+
+```bash
+cd /home/enjoyer777/ginai_english
+
+# 1. Список всех известных пользователей (id, username, телефон, кол-во сообщений, hot)
+docker compose exec bot python -m app.scripts.reset_memory
+
+# 2. Что удалится у конкретного юзера, без удаления
+docker compose exec bot python -m app.scripts.reset_memory --user 128657277 --dry-run
+
+# 3. Реально вычистить одного юзера
+docker compose exec bot python -m app.scripts.reset_memory --user 128657277
+
+# 4. Снести ВСЮ память (требует --force как защиту от случайностей)
+docker compose exec bot python -m app.scripts.reset_memory --all --force
+```
+
+Что чистится: история диалога, профиль квалификации, локальная ссылка на сделку Bitrix24, дедуп уведомлений, запись о пользователе. Сама сделка в Битрикс24 при этом **не удаляется** — её надо стереть в CRM руками, если хочешь полностью чистый прогон (иначе при следующем hot-интенте бот создаст новую сделку рядом со старой).
+
 ---
 
 ## Структура репозитория
