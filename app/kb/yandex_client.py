@@ -83,7 +83,19 @@ VALID_LEVELS = {"A0-A1", "A2", "B1", "B2"}
 
 
 def parse_xlsx(blob: bytes) -> KBSnapshot:
-    wb = load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
+    # Сначала пытаемся быстро (read_only=True — стримовое чтение, малая память).
+    # Я.Документы и некоторые онлайн-редакторы при сохранении в xlsx иногда отдают
+    # файл без styles.xml — read_only-режим openpyxl на этом падает с
+    # 'could not read stylesheet from None'. На fallback идём в обычный режим,
+    # который игнорирует такие огрехи.
+    try:
+        wb = load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
+    except Exception as e:
+        logger.warning(
+            "openpyxl read_only mode failed ({}); falling back to full-load mode",
+            type(e).__name__,
+        )
+        wb = load_workbook(io.BytesIO(blob), read_only=False, data_only=True, keep_vba=False)
 
     courses = _parse_courses(wb["Курсы"]) if "Курсы" in wb.sheetnames else []
     schedules = _parse_schedules(wb["Расписание"]) if "Расписание" in wb.sheetnames else []
