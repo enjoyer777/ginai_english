@@ -23,6 +23,7 @@ RUN pip install \
     "loguru>=0.7.2" \
     "openai>=1.40.0" \
     "openpyxl>=3.1.5" \
+    "python-calamine>=0.2.3" \
     "pydantic>=2.8.0" \
     "pydantic-settings>=2.5.0" \
     "python-dotenv>=1.0.1" \

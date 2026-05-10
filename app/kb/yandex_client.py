@@ -22,6 +22,7 @@ import httpx
 from loguru import logger
 from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
+from python_calamine import CalamineWorkbook
 
 
 # Минимально-валидный styles.xml. Я.Документы и некоторые онлайн-редакторы при экспорте
@@ -121,34 +122,32 @@ VALID_LEVELS = {"A0-A1", "A2", "B1", "B2"}
 
 
 def parse_xlsx(blob: bytes) -> KBSnapshot:
-    # 1) Быстрый путь — read_only=True, стримовое чтение
+    """Парсит xlsx в KBSnapshot.
+
+    Стратегия: основной парсер — calamine (Rust, гораздо терпимее к файлам,
+    которые экспортированы Я.Документами или другими онлайн-редакторами и
+    которые ломают openpyxl). Если calamine по какой-то причине не справился —
+    fallback на openpyxl с попыткой восстановить styles.xml.
+    """
+    sheets: dict[str, list[dict[str, Any]]] = {}
+
     try:
-        wb = load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
+        sheets = _read_sheets_with_calamine(blob)
     except Exception as e:
-        # 2) Если падает на чтении стилей (типичная проблема файлов из Я.Документов) —
-        #    подменяем styles.xml в zip-контейнере и пробуем заново.
-        msg = str(e).lower()
-        if "stylesheet" in msg or "styles" in msg:
-            logger.warning(
-                "xlsx styles.xml is broken/missing — sanitizing and retrying"
-            )
-            sanitized = _sanitize_xlsx_styles(blob)
-            wb = load_workbook(io.BytesIO(sanitized), read_only=False, data_only=True)
-        else:
-            logger.warning(
-                "openpyxl read_only mode failed ({}); falling back to full-load mode",
-                type(e).__name__,
-            )
-            wb = load_workbook(io.BytesIO(blob), read_only=False, data_only=True)
+        logger.warning(
+            "calamine failed ({}); falling back to openpyxl",
+            type(e).__name__,
+        )
+        sheets = _read_sheets_with_openpyxl(blob)
 
-    courses = _parse_courses(wb["Курсы"]) if "Курсы" in wb.sheetnames else []
-    schedules = _parse_schedules(wb["Расписание"]) if "Расписание" in wb.sheetnames else []
-    teachers = _parse_teachers(wb["Преподаватели"]) if "Преподаватели" in wb.sheetnames else []
-    faq = _parse_faq(wb["FAQ"]) if "FAQ" in wb.sheetnames else []
-    settings_obj = _parse_settings(wb["Настройки"]) if "Настройки" in wb.sheetnames else KBSettings()
+    courses = _parse_courses(sheets.get("Курсы", []))
+    schedules = _parse_schedules(sheets.get("Расписание", []))
+    teachers = _parse_teachers(sheets.get("Преподаватели", []))
+    faq = _parse_faq(sheets.get("FAQ", []))
+    settings_obj = _parse_settings(sheets.get("Настройки", []))
 
-    if "Праздники" in wb.sheetnames:
-        overrides, notes = _parse_holidays(wb["Праздники"])
+    if "Праздники" in sheets:
+        overrides, notes = _parse_holidays(sheets["Праздники"])
         settings_obj.date_overrides = overrides
         settings_obj.date_notes = notes
 
@@ -169,7 +168,52 @@ def parse_xlsx(blob: bytes) -> KBSnapshot:
     )
 
 
+def _read_sheets_with_calamine(blob: bytes) -> dict[str, list[dict[str, Any]]]:
+    """Открывает xlsx через calamine и приводит каждый лист к list[dict[header→value]]."""
+    wb = CalamineWorkbook.from_filelike(io.BytesIO(blob))
+    out: dict[str, list[dict[str, Any]]] = {}
+    for name in wb.sheet_names:
+        sheet = wb.get_sheet_by_name(name)
+        rows = sheet.to_python()
+        out[name] = _rows_to_dicts(rows)
+    return out
+
+
+def _read_sheets_with_openpyxl(blob: bytes) -> dict[str, list[dict[str, Any]]]:
+    """Fallback. Пытается через read_only=True, потом подменяет styles.xml, потом normal mode."""
+    try:
+        wb = load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
+    except Exception as e:
+        msg = str(e).lower()
+        if "stylesheet" in msg or "styles" in msg:
+            logger.warning("xlsx styles.xml broken; sanitizing and retrying via openpyxl")
+            blob = _sanitize_xlsx_styles(blob)
+        wb = load_workbook(io.BytesIO(blob), read_only=False, data_only=True)
+
+    out: dict[str, list[dict[str, Any]]] = {}
+    for name in wb.sheetnames:
+        out[name] = _read_dict_rows(wb[name])
+    return out
+
+
+def _rows_to_dicts(rows: list[list[Any]]) -> list[dict[str, Any]]:
+    """Принимает строки [[header...], [val...], ...] и возвращает list[dict]."""
+    if not rows:
+        return []
+    headers = [
+        str(h).strip() if h is not None else ""
+        for h in rows[0]
+    ]
+    out: list[dict[str, Any]] = []
+    for row in rows[1:]:
+        if all(c is None or (isinstance(c, str) and not c.strip()) for c in row):
+            continue
+        out.append({headers[i]: row[i] for i in range(min(len(headers), len(row)))})
+    return out
+
+
 def _read_dict_rows(ws: Worksheet) -> list[dict[str, Any]]:
+    """openpyxl-вариант _rows_to_dicts."""
     rows = ws.iter_rows(values_only=True)
     headers = [str(h).strip() if h is not None else "" for h in next(rows, [])]
     out: list[dict[str, Any]] = []
@@ -218,9 +262,9 @@ def _to_date(v: Any):
     return None
 
 
-def _parse_courses(ws: Worksheet) -> list[Course]:
+def _parse_courses(rows: list[dict[str, Any]]) -> list[Course]:
     out: list[Course] = []
-    for r in _read_dict_rows(ws):
+    for r in rows:
         direction = _to_str(r.get("direction"))
         if direction not in VALID_DIRECTIONS:
             logger.warning("Skipping course with bad direction: {}", direction)
@@ -250,9 +294,9 @@ def _parse_courses(ws: Worksheet) -> list[Course]:
     return out
 
 
-def _parse_schedules(ws: Worksheet) -> list[ScheduleSlot]:
+def _parse_schedules(rows: list[dict[str, Any]]) -> list[ScheduleSlot]:
     out: list[ScheduleSlot] = []
-    for r in _read_dict_rows(ws):
+    for r in rows:
         start_date = _to_date(r.get("start_date"))
         if start_date is None:
             continue
@@ -268,9 +312,9 @@ def _parse_schedules(ws: Worksheet) -> list[ScheduleSlot]:
     return out
 
 
-def _parse_teachers(ws: Worksheet) -> list[Teacher]:
+def _parse_teachers(rows: list[dict[str, Any]]) -> list[Teacher]:
     out: list[Teacher] = []
-    for r in _read_dict_rows(ws):
+    for r in rows:
         out.append(
             Teacher(
                 name=_to_str(r.get("name")),
@@ -282,9 +326,9 @@ def _parse_teachers(ws: Worksheet) -> list[Teacher]:
     return out
 
 
-def _parse_faq(ws: Worksheet) -> list[FAQItem]:
+def _parse_faq(rows: list[dict[str, Any]]) -> list[FAQItem]:
     out: list[FAQItem] = []
-    for r in _read_dict_rows(ws):
+    for r in rows:
         q = _to_str(r.get("question"))
         a = _to_str(r.get("answer"))
         if q and a:
@@ -292,7 +336,7 @@ def _parse_faq(ws: Worksheet) -> list[FAQItem]:
     return out
 
 
-def _parse_holidays(ws: Worksheet) -> tuple[
+def _parse_holidays(rows: list[dict[str, Any]]) -> tuple[
     dict[Any, tuple[time, time] | None],
     dict[Any, str],
 ]:
@@ -306,7 +350,7 @@ def _parse_holidays(ws: Worksheet) -> tuple[
     """
     overrides: dict[Any, tuple[time, time] | None] = {}
     notes: dict[Any, str] = {}
-    for r in _read_dict_rows(ws):
+    for r in rows:
         d = _to_date(r.get("date"))
         if d is None:
             continue
@@ -318,7 +362,7 @@ def _parse_holidays(ws: Worksheet) -> tuple[
     return overrides, notes
 
 
-def _parse_settings(ws: Worksheet) -> KBSettings:
+def _parse_settings(rows: list[dict[str, Any]]) -> KBSettings:
     """Лист 'Настройки' — две колонки key|value, плоский словарь.
 
     Распознаваемые ключи:
@@ -327,7 +371,6 @@ def _parse_settings(ws: Worksheet) -> KBSettings:
       - contact_phone, contact_email, contact_site
       - social_telegram, social_vk, ...
     """
-    rows = _read_dict_rows(ws)
     kv: dict[str, str] = {}
     for r in rows:
         key = _to_str(r.get("key"))
