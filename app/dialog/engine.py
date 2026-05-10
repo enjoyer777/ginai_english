@@ -202,6 +202,21 @@ async def _t_update_profile(state: _ToolState, args: dict) -> Any:
         horizon=args.get("horizon"),
         readiness=args.get("readiness"),
     )
+
+    phone_raw = args.get("contact_phone")
+    if phone_raw:
+        phone = _normalize_phone(phone_raw)
+        if phone:
+            await repo.set_contact_phone(state.user.tg_user_id, phone)
+            # Локальное состояние тоже подсветим — оно нужно для гард-проверки в mark_hot
+            state.user.contact_phone = phone
+            logger.info("Saved contact_phone for tg_user={}", state.user.tg_user_id)
+
+    name_raw = args.get("first_name")
+    if name_raw and not state.user.first_name:
+        # Заполняем имя, только если в Telegram-профиле его не было
+        state.user.first_name = name_raw.strip()[:64]
+
     return {"ok": True, "profile": _profile_to_dict(state.profile)}
 
 
@@ -211,8 +226,47 @@ async def _t_mark_hot(state: _ToolState, args: dict) -> Any:
     await repo.mark_hot(state.user.tg_user_id)
     state.profile.is_hot = True
     state.hot_triggered = True
+
+    # Гард: без телефона в CRM не пушим. LLM по промпту попросит у клиента и
+    # запишет через update_lead_profile с contact_phone, потом снова вызовет mark_hot_lead.
+    if not state.user.contact_phone:
+        logger.info("mark_hot_lead deferred: phone not yet collected for tg_user={}", state.user.tg_user_id)
+        return {
+            "ok": False,
+            "status": "phone_required",
+            "instruction": (
+                "Лид помечен как горячий, но телефон ещё не собран. Спроси у клиента "
+                "номер телефона для связи, запиши его через update_lead_profile с "
+                "параметром contact_phone, затем снова вызови mark_hot_lead."
+            ),
+        }
+
     success = await _push_to_crm(state, reason=f"hot:{reason}")
     return {"ok": success}
+
+
+def _normalize_phone(raw: str) -> str | None:
+    """Принимает что угодно (+7 999 ..., 8(999)..., +79991234567), оставляет только цифры/+.
+
+    Минимум 10 цифр, максимум 15 (E.164). Если не похоже на номер — возвращает None.
+    """
+    cleaned = "".join(c for c in raw if c.isdigit() or c == "+")
+    if cleaned.startswith("+"):
+        digits = cleaned[1:]
+    else:
+        digits = cleaned
+    if not digits.isdigit():
+        return None
+    if len(digits) < 10 or len(digits) > 15:
+        return None
+    # Российские номера, начатые с 8 — нормализуем в +7
+    if len(digits) == 11 and digits.startswith("8"):
+        return "+7" + digits[1:]
+    if cleaned.startswith("+"):
+        return "+" + digits
+    if len(digits) == 11 and digits.startswith("7"):
+        return "+" + digits
+    return digits
 
 
 async def _t_request_handover(state: _ToolState, args: dict) -> Any:
