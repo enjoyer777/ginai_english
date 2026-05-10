@@ -25,16 +25,32 @@ def template_blob() -> bytes:
     return template_path.read_bytes()
 
 
-def _corrupt_styles_xml(blob: bytes) -> bytes:
-    """Имитируем экспорт из Я.Документов: оставляем zip валидным,
-    но xl/styles.xml делаем пустым."""
+def _xlsx_with_minimal_styles(blob: bytes) -> bytes:
+    """Имитируем экспорт из Я.Документов: zip валидный, но styles.xml урезан до
+    почти пустого <styleSheet/> — XML валидный, но без cellXfs / fonts / fills,
+    что openpyxl терпеть не любит."""
+    minimal = (
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        b'<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>'
+    )
     out = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(blob), "r") as zin:
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
             for name in zin.namelist():
                 if name == "xl/styles.xml":
-                    zout.writestr(name, b"")  # пустой — то, что валит openpyxl
+                    zout.writestr(name, minimal)
                 else:
+                    zout.writestr(name, zin.read(name))
+    return out.getvalue()
+
+
+def _xlsx_without_styles(blob: bytes) -> bytes:
+    """Полностью убираем xl/styles.xml — openpyxl на этом тоже спотыкается."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(blob), "r") as zin:
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+            for name in zin.namelist():
+                if name != "xl/styles.xml":
                     zout.writestr(name, zin.read(name))
     return out.getvalue()
 
@@ -51,16 +67,16 @@ def test_calamine_reads_normal_xlsx(template_blob):
     assert "Настройки" in sheets
 
 
-def test_calamine_reads_xlsx_with_empty_styles_xml(template_blob):
-    """Самый важный кейс: calamine не падает, даже если styles.xml пустой."""
-    corrupted = _corrupt_styles_xml(template_blob)
+def test_calamine_reads_xlsx_with_minimal_styles(template_blob):
+    """Calamine терпимее openpyxl: читает данные даже если styles.xml — пустая болванка."""
+    corrupted = _xlsx_with_minimal_styles(template_blob)
     sheets = _read_sheets_with_calamine(corrupted)
     assert len(sheets["Курсы"]) > 0
 
 
-def test_parse_xlsx_end_to_end_on_corrupted_file(template_blob):
-    """parse_xlsx целиком: calamine как primary вытягивает данные несмотря на битый styles.xml."""
-    corrupted = _corrupt_styles_xml(template_blob)
+def test_parse_xlsx_end_to_end_on_minimal_styles(template_blob):
+    """parse_xlsx целиком: calamine как primary вытягивает данные несмотря на урезанный styles.xml."""
+    corrupted = _xlsx_with_minimal_styles(template_blob)
     snapshot = parse_xlsx(corrupted)
 
     assert len(snapshot.courses) > 0
@@ -71,34 +87,21 @@ def test_parse_xlsx_end_to_end_on_corrupted_file(template_blob):
 # --- openpyxl-fallback с санитайзером ---
 
 
-def test_openpyxl_falls_back_through_sanitizer(template_blob):
-    """openpyxl-вариант сам подменяет styles.xml на минимально валидный."""
-    corrupted = _corrupt_styles_xml(template_blob)
-    sheets = _read_sheets_with_openpyxl(corrupted)
+def test_openpyxl_falls_back_through_sanitizer_on_missing_styles(template_blob):
+    """openpyxl-вариант сам подменяет styles.xml на минимально валидный, даже если файла нет."""
+    no_styles = _xlsx_without_styles(template_blob)
+    sheets = _read_sheets_with_openpyxl(no_styles)
     assert len(sheets["Курсы"]) > 0
 
 
-def test_sanitize_xlsx_styles_replaces_broken_styles(template_blob):
-    corrupted = _corrupt_styles_xml(template_blob)
-    sanitized = _sanitize_xlsx_styles(corrupted)
+def test_sanitize_xlsx_styles_replaces_with_valid_minimal(template_blob):
+    no_styles = _xlsx_without_styles(template_blob)
+    sanitized = _sanitize_xlsx_styles(no_styles)
 
     # После санитайза в файле есть styles.xml с непустым содержимым
     with zipfile.ZipFile(io.BytesIO(sanitized), "r") as zf:
+        assert "xl/styles.xml" in zf.namelist()
         styles_content = zf.read("xl/styles.xml")
     assert b"styleSheet" in styles_content
+    assert b"cellXfs" in styles_content   # минимум структуры есть
     assert len(styles_content) > 100
-
-
-def test_sanitize_xlsx_styles_creates_styles_if_missing(template_blob):
-    """Если в zip вообще нет xl/styles.xml — санитайзер его создаст."""
-    out = io.BytesIO()
-    with zipfile.ZipFile(io.BytesIO(template_blob), "r") as zin:
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
-            for name in zin.namelist():
-                if name != "xl/styles.xml":
-                    zout.writestr(name, zin.read(name))
-
-    sanitized = _sanitize_xlsx_styles(out.getvalue())
-    with zipfile.ZipFile(io.BytesIO(sanitized), "r") as zf:
-        assert "xl/styles.xml" in zf.namelist()
-        assert b"styleSheet" in zf.read("xl/styles.xml")

@@ -180,14 +180,18 @@ def _read_sheets_with_calamine(blob: bytes) -> dict[str, list[dict[str, Any]]]:
 
 
 def _read_sheets_with_openpyxl(blob: bytes) -> dict[str, list[dict[str, Any]]]:
-    """Fallback. Пытается через read_only=True, потом подменяет styles.xml, потом normal mode."""
+    """Fallback. На любой ошибке read_only=True санитайзим styles.xml и повторяем."""
     try:
         wb = load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
     except Exception as e:
-        msg = str(e).lower()
-        if "stylesheet" in msg or "styles" in msg:
-            logger.warning("xlsx styles.xml broken; sanitizing and retrying via openpyxl")
-            blob = _sanitize_xlsx_styles(blob)
+        # Не пытаемся угадывать тип ошибки по строке — современные версии openpyxl
+        # выдают разные исключения при битом styles.xml (ValueError / ParseError / etc).
+        # Просто всегда подменяем styles.xml и пробуем full-load.
+        logger.warning(
+            "openpyxl read_only failed ({}); sanitizing styles.xml and retrying",
+            type(e).__name__,
+        )
+        blob = _sanitize_xlsx_styles(blob)
         wb = load_workbook(io.BytesIO(blob), read_only=False, data_only=True)
 
     out: dict[str, list[dict[str, Any]]] = {}
