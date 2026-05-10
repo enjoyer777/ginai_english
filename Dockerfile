@@ -27,10 +27,19 @@ RUN pip install \
     "pydantic>=2.8.0" \
     "pydantic-settings>=2.5.0" \
     "python-dotenv>=1.0.1" \
-    "tzdata>=2024.1"
+    "tzdata>=2024.1" \
+    "pytest>=8.3.0" \
+    "pytest-asyncio>=0.24.0"
 
 # Код приложения
 COPY app ./app
+
+# Тесты + фикстуры (юнит-тесты используют docs/kb_template.xlsx).
+# Не нужно для рантайма, но делает образ self-contained для запуска
+# `docker compose exec bot pytest tests/unit` без отдельного билда.
+COPY tests ./tests
+COPY docs ./docs
+COPY pyproject.toml ./pyproject.toml
 
 # Состояние и логи — на volume
 VOLUME ["/data"]
