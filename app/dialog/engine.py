@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,10 @@ from app.llm.client import llm
 from app.notifications.managers_chat import notify_hot_lead
 from app.state import repository as repo
 from app.state.models import LeadProfile, Message, User
-from app.utils.working_hours import default_schedule, is_working_now
+from app.utils.time import now
+from app.utils.working_hours import WEEKDAY_KEYS, default_schedule, is_within, is_working_now
+
+WEEKDAY_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -341,19 +344,116 @@ def _off_hours_message(snapshot: KBSnapshot | None) -> str:
 
 def _compose_system(snapshot: KBSnapshot | None, profile: LeadProfile) -> str:
     base = load_prompt("system.txt")
-    today = date.today().isoformat()
+    schedule = _schedule_from(snapshot)
+    moment = now()  # МСК
+
     profile_block = _profile_to_text(profile) or "(пока пусто)"
-    work_state = "сейчас рабочее время" if is_working_now(_schedule_from(snapshot)) else "сейчас НЕ рабочее время"
+    calendar_block = _compose_calendar_block(schedule, moment)
+
     extras = (
-        f"\n\n# КОНТЕКСТ\nСегодня: {today}. {work_state}.\n\n"
+        f"\n\n# КАЛЕНДАРЬ (используй ТОЛЬКО эти данные, не вычисляй даты сам)\n"
+        f"{calendar_block}\n\n"
         f"# ПРОФИЛЬ КЛИЕНТА (что уже знаем)\n{profile_block}\n"
     )
-    if not is_working_now(_schedule_from(snapshot)):
+    if not is_within(moment, schedule):
         extras += (
-            "\nЕсли клиент горячий или просит менеджера: предупреди, что с ним свяжутся "
-            "в ближайшие рабочие часы (Пн-Пт 9-19, Сб 10-15 МСК). Не обещай мгновенный ответ."
+            "\nЕсли клиент горячий или просит менеджера — называй конкретный ближайший "
+            "рабочий день и часы из блока КАЛЕНДАРЬ выше. Не пиши «понедельник» абстрактно — "
+            "пиши «понедельник, 11 мая, с 9:00 МСК» (брать из 'ближайшее рабочее окно'). "
+            "Не обещай мгновенный ответ человека вне рабочих часов."
         )
     return base + extras
+
+
+def _compose_calendar_block(
+    schedule: dict[str, tuple[time, time] | None], moment
+) -> str:
+    """Готовый блок «сегодня/завтра/неделя/ближайшее окно» — чтобы LLM не считала даты сама."""
+    today_idx = moment.weekday()
+    today_date = moment.date()
+    is_now_working = is_within(moment, schedule)
+
+    # Сегодня
+    today_state = _format_day_state(today_idx, schedule, is_today=True, is_working_now_flag=is_now_working, current_time=moment.time())
+    today_line = f"Сегодня: {today_date.isoformat()} ({WEEKDAY_RU[today_idx]}) — {today_state}"
+
+    # Завтра
+    tomorrow_date = today_date + timedelta(days=1)
+    tomorrow_idx = (today_idx + 1) % 7
+    tomorrow_line = (
+        f"Завтра: {tomorrow_date.isoformat()} ({WEEKDAY_RU[tomorrow_idx]}) — "
+        f"{_format_day_state(tomorrow_idx, schedule, is_today=False)}"
+    )
+
+    # Расписание недели целиком — для произвольных вопросов «а в субботу?»
+    weekly = ["Расписание недели:"]
+    for i, key in enumerate(WEEKDAY_KEYS):
+        weekly.append(f"  - {WEEKDAY_RU[i].capitalize()}: {_format_window(schedule.get(key))}")
+
+    # Ближайшее доступное рабочее окно (для off-hours формулировок)
+    nxt = _next_working_window(schedule, moment)
+    next_line = f"Ближайшее рабочее окно: {nxt}" if nxt else "Ближайшее рабочее окно: расписание не задано."
+
+    return "\n".join([today_line, tomorrow_line, *weekly, next_line])
+
+
+def _format_window(window: tuple[time, time] | None) -> str:
+    if window is None:
+        return "выходной"
+    s, e = window
+    return f"{s.strftime('%H:%M')}–{e.strftime('%H:%M')} МСК"
+
+
+def _format_day_state(
+    weekday_idx: int,
+    schedule: dict[str, tuple[time, time] | None],
+    *,
+    is_today: bool,
+    is_working_now_flag: bool = False,
+    current_time: time | None = None,
+) -> str:
+    window = schedule.get(WEEKDAY_KEYS[weekday_idx])
+    base = _format_window(window)
+    if not is_today:
+        return base
+    if window is None:
+        return f"{base} (нерабочий день)"
+    if is_working_now_flag:
+        return f"{base}, СЕЙЧАС рабочее время"
+    cur = current_time.strftime("%H:%M") if current_time else "?"
+    s, e = window
+    if current_time and current_time < s:
+        return f"{base}, сейчас {cur} (ещё рано — менеджеры с {s.strftime('%H:%M')})"
+    if current_time and current_time >= e:
+        return f"{base}, сейчас {cur} (уже поздно — менеджеры до {e.strftime('%H:%M')})"
+    return f"{base}, сейчас {cur}"
+
+
+def _next_working_window(
+    schedule: dict[str, tuple[time, time] | None], moment
+) -> str | None:
+    """Возвращает «вторник, 12 мая, 09:00–19:00 МСК» — ближайшая точка, где менеджер ответит."""
+    cur_dt = moment
+    cur_date = cur_dt.date()
+    for offset in range(0, 8):  # сегодня + 7 дней
+        d = cur_date + timedelta(days=offset)
+        wd_idx = d.weekday()
+        window = schedule.get(WEEKDAY_KEYS[wd_idx])
+        if window is None:
+            continue
+        s, e = window
+        if offset == 0:
+            # Сегодня — учитываем, что окно может быть в будущем или уже прошло
+            if cur_dt.time() < s:
+                return f"{WEEKDAY_RU[wd_idx]}, {d.isoformat()}, {s.strftime('%H:%M')}–{e.strftime('%H:%M')} МСК"
+            if cur_dt.time() < e:
+                # СЕЙЧАС внутри окна — но тогда мы бы не звали этот метод вне off-hours;
+                # на всякий случай вернём «сейчас»
+                return f"сейчас (до {e.strftime('%H:%M')} МСК)"
+            # Сегодня уже поздно — ищем дальше
+            continue
+        return f"{WEEKDAY_RU[wd_idx]}, {d.isoformat()}, {s.strftime('%H:%M')}–{e.strftime('%H:%M')} МСК"
+    return None
 
 
 def _serialize_history(history: list[Message]) -> list[dict]:
