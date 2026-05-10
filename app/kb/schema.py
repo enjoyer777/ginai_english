@@ -47,10 +47,21 @@ class Settings(BaseModel):
     """Настройки школы: рабочие часы, контакты, тексты приветствия и disclaimer."""
 
     working_hours: dict[str, tuple[time, time] | None] = Field(default_factory=dict)
+
+    # Override-исключения по конкретным датам (праздники, переносы и т.п.).
+    # Ключ — дата. Значение — None (выходной) либо (start, end) — особые часы.
+    # Полностью перекрывают weekly working_hours для этой даты.
+    date_overrides: dict[date, tuple[time, time] | None] = Field(default_factory=dict)
+
+    # Текстовые пометки для исключений (для отображения клиенту: «9 мая — День Победы»).
+    date_notes: dict[date, str] = Field(default_factory=dict)
+
     contacts: dict[str, str] = Field(default_factory=dict)
     socials: dict[str, str] = Field(default_factory=dict)
     greeting_text: str = ""
     pii_disclaimer: str = ""
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
 class KBSnapshot(BaseModel):

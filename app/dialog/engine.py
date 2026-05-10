@@ -107,7 +107,7 @@ async def handover_flow(bot: Bot, user: User) -> str:
             "Сейчас не получилось передать заявку — попробуйте, пожалуйста, чуть позже. "
             "Менеджер всё равно свяжется."
         )
-    if is_working_now(_schedule_from(snapshot)):
+    if is_working_now(_schedule_from(snapshot), _overrides_from(snapshot)):
         return "Передал менеджеру, скоро свяжется."
     return _off_hours_message(snapshot)
 
@@ -315,9 +315,9 @@ async def _push_to_crm(state: _ToolState, reason: str) -> bool:
         logger.exception("Unexpected Bitrix error")
         return False
 
-    # Уведомление в чат менеджеров — только в рабочее время
+    # Уведомление в чат менеджеров — только в рабочее время (с учётом праздников)
     snapshot = state.snapshot
-    if is_working_now(_schedule_from(snapshot)):
+    if is_working_now(_schedule_from(snapshot), _overrides_from(snapshot)):
         deal_url = bitrix.deal_url(deal_id)
         await notify_hot_lead(state.bot, user, deal_url)
 
@@ -335,6 +335,18 @@ def _schedule_from(snapshot: KBSnapshot | None):
     return default_schedule()
 
 
+def _overrides_from(snapshot: KBSnapshot | None) -> dict:
+    if snapshot:
+        return dict(snapshot.settings.date_overrides)
+    return {}
+
+
+def _notes_from(snapshot: KBSnapshot | None) -> dict:
+    if snapshot:
+        return dict(snapshot.settings.date_notes)
+    return {}
+
+
 def _off_hours_message(snapshot: KBSnapshot | None) -> str:
     return (
         "Принял заявку. Менеджер свяжется в ближайшие рабочие часы — "
@@ -345,17 +357,19 @@ def _off_hours_message(snapshot: KBSnapshot | None) -> str:
 def _compose_system(snapshot: KBSnapshot | None, profile: LeadProfile) -> str:
     base = load_prompt("system.txt")
     schedule = _schedule_from(snapshot)
+    overrides = _overrides_from(snapshot)
+    notes = _notes_from(snapshot)
     moment = now()  # МСК
 
     profile_block = _profile_to_text(profile) or "(пока пусто)"
-    calendar_block = _compose_calendar_block(schedule, moment)
+    calendar_block = _compose_calendar_block(schedule, overrides, notes, moment)
 
     extras = (
         f"\n\n# КАЛЕНДАРЬ (используй ТОЛЬКО эти данные, не вычисляй даты сам)\n"
         f"{calendar_block}\n\n"
         f"# ПРОФИЛЬ КЛИЕНТА (что уже знаем)\n{profile_block}\n"
     )
-    if not is_within(moment, schedule):
+    if not is_within(moment, schedule, overrides):
         extras += (
             "\nЕсли клиент горячий или просит менеджера — называй конкретный ближайший "
             "рабочий день и часы из блока КАЛЕНДАРЬ выше. Не пиши «понедельник» абстрактно — "
@@ -366,15 +380,26 @@ def _compose_system(snapshot: KBSnapshot | None, profile: LeadProfile) -> str:
 
 
 def _compose_calendar_block(
-    schedule: dict[str, tuple[time, time] | None], moment
+    schedule: dict[str, tuple[time, time] | None],
+    overrides: dict[date, tuple[time, time] | None],
+    notes: dict[date, str],
+    moment,
 ) -> str:
     """Готовый блок «сегодня/завтра/неделя/ближайшее окно» — чтобы LLM не считала даты сама."""
     today_idx = moment.weekday()
     today_date = moment.date()
-    is_now_working = is_within(moment, schedule)
+    is_now_working = is_within(moment, schedule, overrides)
 
     # Сегодня
-    today_state = _format_day_state(today_idx, schedule, is_today=True, is_working_now_flag=is_now_working, current_time=moment.time())
+    today_state = _format_day_state(
+        today_date,
+        schedule,
+        overrides,
+        notes,
+        is_today=True,
+        is_working_now_flag=is_now_working,
+        current_time=moment.time(),
+    )
     today_line = f"Сегодня: {today_date.isoformat()} ({WEEKDAY_RU[today_idx]}) — {today_state}"
 
     # Завтра
@@ -382,19 +407,28 @@ def _compose_calendar_block(
     tomorrow_idx = (today_idx + 1) % 7
     tomorrow_line = (
         f"Завтра: {tomorrow_date.isoformat()} ({WEEKDAY_RU[tomorrow_idx]}) — "
-        f"{_format_day_state(tomorrow_idx, schedule, is_today=False)}"
+        f"{_format_day_state(tomorrow_date, schedule, overrides, notes, is_today=False)}"
     )
 
-    # Расписание недели целиком — для произвольных вопросов «а в субботу?»
-    weekly = ["Расписание недели:"]
+    # Расписание недели — без оверрайдов (это «обычный» базовый график школы)
+    weekly = ["Расписание недели (обычное, без праздников):"]
     for i, key in enumerate(WEEKDAY_KEYS):
         weekly.append(f"  - {WEEKDAY_RU[i].capitalize()}: {_format_window(schedule.get(key))}")
 
-    # Ближайшее доступное рабочее окно (для off-hours формулировок)
-    nxt = _next_working_window(schedule, moment)
+    # Праздники / исключения на ближайшие 30 дней
+    upcoming = _format_upcoming_overrides(overrides, notes, today_date, days_ahead=30)
+    holiday_block = []
+    if upcoming:
+        holiday_block.append("Особые даты в ближайшие 30 дней:")
+        holiday_block.extend(upcoming)
+    else:
+        holiday_block.append("Особые даты: на ближайший месяц не заданы.")
+
+    # Ближайшее доступное рабочее окно (с учётом праздников)
+    nxt = _next_working_window(schedule, overrides, notes, moment)
     next_line = f"Ближайшее рабочее окно: {nxt}" if nxt else "Ближайшее рабочее окно: расписание не задано."
 
-    return "\n".join([today_line, tomorrow_line, *weekly, next_line])
+    return "\n".join([today_line, tomorrow_line, *weekly, *holiday_block, next_line])
 
 
 def _format_window(window: tuple[time, time] | None) -> str:
@@ -404,55 +438,110 @@ def _format_window(window: tuple[time, time] | None) -> str:
     return f"{s.strftime('%H:%M')}–{e.strftime('%H:%M')} МСК"
 
 
+def _format_upcoming_overrides(
+    overrides: dict[date, tuple[time, time] | None],
+    notes: dict[date, str],
+    from_date: date,
+    days_ahead: int,
+) -> list[str]:
+    horizon = from_date + timedelta(days=days_ahead)
+    relevant = sorted(d for d in overrides if from_date <= d <= horizon)
+    out = []
+    for d in relevant:
+        wd = WEEKDAY_RU[d.weekday()]
+        win = overrides[d]
+        win_str = _format_window(win)
+        note = notes.get(d, "")
+        line = f"  - {d.isoformat()} ({wd}): {win_str}"
+        if note:
+            line += f" — {note}"
+        out.append(line)
+    return out
+
+
 def _format_day_state(
-    weekday_idx: int,
+    target_date: date,
     schedule: dict[str, tuple[time, time] | None],
+    overrides: dict[date, tuple[time, time] | None],
+    notes: dict[date, str],
     *,
     is_today: bool,
     is_working_now_flag: bool = False,
     current_time: time | None = None,
 ) -> str:
-    window = schedule.get(WEEKDAY_KEYS[weekday_idx])
+    from app.utils.working_hours import effective_window_for
+
+    window = effective_window_for(target_date, schedule, overrides)
+    is_overridden = target_date in overrides
+    note = notes.get(target_date, "")
+
     base = _format_window(window)
+    suffix_parts = []
+    if is_overridden:
+        suffix_parts.append("особая дата")
+        if note:
+            suffix_parts.append(note)
+
     if not is_today:
+        if suffix_parts:
+            return f"{base} ({'; '.join(suffix_parts)})"
         return base
+
     if window is None:
+        if suffix_parts:
+            return f"{base} (нерабочий день; {'; '.join(suffix_parts)})"
         return f"{base} (нерабочий день)"
     if is_working_now_flag:
-        return f"{base}, СЕЙЧАС рабочее время"
+        tail = f", СЕЙЧАС рабочее время"
+        if suffix_parts:
+            tail += f" ({'; '.join(suffix_parts)})"
+        return f"{base}{tail}"
     cur = current_time.strftime("%H:%M") if current_time else "?"
     s, e = window
     if current_time and current_time < s:
-        return f"{base}, сейчас {cur} (ещё рано — менеджеры с {s.strftime('%H:%M')})"
-    if current_time and current_time >= e:
-        return f"{base}, сейчас {cur} (уже поздно — менеджеры до {e.strftime('%H:%M')})"
-    return f"{base}, сейчас {cur}"
+        tail = f", сейчас {cur} (ещё рано — менеджеры с {s.strftime('%H:%M')})"
+    elif current_time and current_time >= e:
+        tail = f", сейчас {cur} (уже поздно — менеджеры до {e.strftime('%H:%M')})"
+    else:
+        tail = f", сейчас {cur}"
+    if suffix_parts:
+        tail += f" ({'; '.join(suffix_parts)})"
+    return f"{base}{tail}"
 
 
 def _next_working_window(
-    schedule: dict[str, tuple[time, time] | None], moment
+    schedule: dict[str, tuple[time, time] | None],
+    overrides: dict[date, tuple[time, time] | None],
+    notes: dict[date, str],
+    moment,
 ) -> str | None:
-    """Возвращает «вторник, 12 мая, 09:00–19:00 МСК» — ближайшая точка, где менеджер ответит."""
+    """Возвращает «вторник, 12 мая, 09:00–19:00 МСК» — ближайшая точка, где менеджер ответит,
+    с учётом праздничных переопределений (день полностью выпал / часы укорочены)."""
+    from app.utils.working_hours import effective_window_for
+
     cur_dt = moment
     cur_date = cur_dt.date()
-    for offset in range(0, 8):  # сегодня + 7 дней
+    for offset in range(0, 14):  # запас на длинные праздники
         d = cur_date + timedelta(days=offset)
         wd_idx = d.weekday()
-        window = schedule.get(WEEKDAY_KEYS[wd_idx])
+        window = effective_window_for(d, schedule, overrides)
         if window is None:
             continue
         s, e = window
+        note_suffix = f" ({notes[d]})" if d in notes and notes[d] else ""
         if offset == 0:
-            # Сегодня — учитываем, что окно может быть в будущем или уже прошло
             if cur_dt.time() < s:
-                return f"{WEEKDAY_RU[wd_idx]}, {d.isoformat()}, {s.strftime('%H:%M')}–{e.strftime('%H:%M')} МСК"
+                return (
+                    f"{WEEKDAY_RU[wd_idx]}, {d.isoformat()}, "
+                    f"{s.strftime('%H:%M')}–{e.strftime('%H:%M')} МСК{note_suffix}"
+                )
             if cur_dt.time() < e:
-                # СЕЙЧАС внутри окна — но тогда мы бы не звали этот метод вне off-hours;
-                # на всякий случай вернём «сейчас»
-                return f"сейчас (до {e.strftime('%H:%M')} МСК)"
-            # Сегодня уже поздно — ищем дальше
+                return f"сейчас (до {e.strftime('%H:%M')} МСК){note_suffix}"
             continue
-        return f"{WEEKDAY_RU[wd_idx]}, {d.isoformat()}, {s.strftime('%H:%M')}–{e.strftime('%H:%M')} МСК"
+        return (
+            f"{WEEKDAY_RU[wd_idx]}, {d.isoformat()}, "
+            f"{s.strftime('%H:%M')}–{e.strftime('%H:%M')} МСК{note_suffix}"
+        )
     return None
 
 

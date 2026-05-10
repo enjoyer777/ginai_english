@@ -91,12 +91,18 @@ def parse_xlsx(blob: bytes) -> KBSnapshot:
     faq = _parse_faq(wb["FAQ"]) if "FAQ" in wb.sheetnames else []
     settings_obj = _parse_settings(wb["Настройки"]) if "Настройки" in wb.sheetnames else KBSettings()
 
+    if "Праздники" in wb.sheetnames:
+        overrides, notes = _parse_holidays(wb["Праздники"])
+        settings_obj.date_overrides = overrides
+        settings_obj.date_notes = notes
+
     logger.info(
-        "KB parsed: {} courses, {} schedule slots, {} teachers, {} faq",
+        "KB parsed: {} courses, {} schedule slots, {} teachers, {} faq, {} date overrides",
         len(courses),
         len(schedules),
         len(teachers),
         len(faq),
+        len(settings_obj.date_overrides),
     )
     return KBSnapshot(
         courses=courses,
@@ -228,6 +234,32 @@ def _parse_faq(ws: Worksheet) -> list[FAQItem]:
         if q and a:
             out.append(FAQItem(question=q, answer=a))
     return out
+
+
+def _parse_holidays(ws: Worksheet) -> tuple[
+    dict[Any, tuple[time, time] | None],
+    dict[Any, str],
+]:
+    """Лист 'Праздники' — список дат-исключений.
+
+    Колонки:
+      - date  (обязательно): YYYY-MM-DD или DD.MM.YYYY
+      - hours (опционально): 'HH:MM-HH:MM' если в этот день работаем особым графиком,
+                             пусто/отсутствует — нерабочий день
+      - note  (опционально): человеческое описание (например, 'День Победы')
+    """
+    overrides: dict[Any, tuple[time, time] | None] = {}
+    notes: dict[Any, str] = {}
+    for r in _read_dict_rows(ws):
+        d = _to_date(r.get("date"))
+        if d is None:
+            continue
+        hours_raw = _to_str(r.get("hours"))
+        overrides[d] = parse_hours_range(hours_raw) if hours_raw else None
+        note = _to_str(r.get("note"))
+        if note:
+            notes[d] = note
+    return overrides, notes
 
 
 def _parse_settings(ws: Worksheet) -> KBSettings:

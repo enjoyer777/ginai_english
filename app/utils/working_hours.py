@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from app.utils.time import now
 
@@ -20,16 +20,29 @@ def parse_hours_range(value: str) -> tuple[time, time] | None:
         return None
 
 
+def effective_window_for(
+    target: date,
+    schedule: dict[str, tuple[time, time] | None],
+    date_overrides: dict[date, tuple[time, time] | None] | None = None,
+) -> tuple[time, time] | None:
+    """Вернуть рабочее окно на конкретную дату с учётом исключений (праздников).
+
+    Приоритет: date_overrides → недельное расписание.
+    None в овердрайде = принудительно выходной (даже если по неделе должен работать).
+    Кортеж в овердрайде = особый график для этой даты (например, сокращённый предпраздничный).
+    """
+    if date_overrides and target in date_overrides:
+        return date_overrides[target]
+    return schedule.get(WEEKDAY_KEYS[target.weekday()])
+
+
 def is_within(
     moment: datetime,
     schedule: dict[str, tuple[time, time] | None],
+    date_overrides: dict[date, tuple[time, time] | None] | None = None,
 ) -> bool:
-    """Проверяет, попадает ли moment в рабочее окно по расписанию.
-
-    schedule: {"mon": (09:00, 19:00), "sat": (10:00, 15:00), "sun": None, ...}
-    """
-    key = WEEKDAY_KEYS[moment.weekday()]
-    window = schedule.get(key)
+    """Проверяет, попадает ли moment в рабочее окно с учётом овердрайдов по датам."""
+    window = effective_window_for(moment.date(), schedule, date_overrides)
     if window is None:
         return False
     start, end = window
@@ -37,8 +50,11 @@ def is_within(
     return start <= current < end
 
 
-def is_working_now(schedule: dict[str, tuple[time, time] | None]) -> bool:
-    return is_within(now(), schedule)
+def is_working_now(
+    schedule: dict[str, tuple[time, time] | None],
+    date_overrides: dict[date, tuple[time, time] | None] | None = None,
+) -> bool:
+    return is_within(now(), schedule, date_overrides)
 
 
 def default_schedule() -> dict[str, tuple[time, time] | None]:
