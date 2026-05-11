@@ -39,12 +39,12 @@ flowchart LR
     client <-->|сообщения| tg
     tg <-->|polling| bot
 
-    bot -->|"уведомление<br/>(имя+TG, без телефона)"| managers
-    bot -->|crm.deal.add/update<br/>с ПДн в открытом виде| bitrix
-    cache -->|обновление KB<br/>(calamine + openpyxl fallback)| ydisk
+    bot -->|"уведомление: имя+TG, без телефона"| managers
+    bot -->|"crm.deal.add/update<br/>с ПДн в открытом виде"| bitrix
+    cache -->|"обновление KB<br/>calamine + openpyxl fallback"| ydisk
 
-    mask -->|маскированный текст:<br/>имена, телефоны, email<br/>заменены на токены| xray
-    xray -->|TLS-туннель<br/>через non-RU выход| openai
+    mask -->|"маскированный текст:<br/>имена, телефоны, email<br/>заменены на токены"| xray
+    xray -->|"TLS-туннель<br/>через non-RU выход"| openai
 
     style RU fill:#e8f5e9,stroke:#43a047
     style NONRU fill:#fff3e0,stroke:#fb8c00
