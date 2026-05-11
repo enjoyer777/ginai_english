@@ -23,6 +23,7 @@ from app.llm.client import llm
 from app.notifications.managers_chat import notify_hot_lead
 from app.state import repository as repo
 from app.state.models import LeadProfile, Message, User
+from app.utils.pii_mask import mask_message, pre_extract_email, pre_extract_phone
 from app.utils.time import now
 from app.utils.working_hours import WEEKDAY_KEYS, default_schedule, is_within, is_working_now
 
@@ -53,21 +54,51 @@ async def process_user_message(bot: Bot, user: User, text: str) -> str:
         await repo.append_message(user.tg_user_id, "assistant", guardrails.GARBAGE_RESPONSE)
         return guardrails.GARBAGE_RESPONSE
 
-    # 2. Записываем сообщение клиента
-    await repo.append_message(user.tg_user_id, "user", text)
+    # 2. PII pre-extraction — телефон/email вытаскиваем ДО LLM и сохраняем в БД.
+    #    Это нужно, чтобы реальные ПДн НЕ улетали на серверы OpenAI (трансгран
+    #    под 152-ФЗ).
+    extracted_phone = pre_extract_phone(text)
+    if extracted_phone and not user.contact_phone:
+        await repo.set_contact_phone(user.tg_user_id, extracted_phone)
+        user.contact_phone = extracted_phone
+        logger.info("Pre-extracted phone for tg_user={} (masked in LLM context)", user.tg_user_id)
 
-    # 3. Готовим контекст для LLM
+    # 3. В БД пишем РАВНО маскированную версию — даже если БД утечёт (это RU),
+    #    в истории не будет повторяющихся номеров.
+    text_for_history = mask_message(text, saved_name=user.first_name)
+    await repo.append_message(user.tg_user_id, "user", text_for_history)
+
+    # 4. Готовим контекст для LLM
     snapshot = await get_snapshot()
     history = await repo.get_recent_messages(user.tg_user_id)
     profile = await repo.get_lead_profile(user.tg_user_id)
 
-    # 4. Состояние, разделяемое с tool-handler'ами
+    # 5. Состояние, разделяемое с tool-handler'ами
     state = _ToolState(bot=bot, user=user, profile=profile, snapshot=snapshot)
     handlers = _build_tool_handlers(state)
 
-    # 5. Системное сообщение собирается из system.txt + плашки контекста
+    # 6. Системное сообщение собирается из system.txt + плашки контекста
     system_text = _compose_system(snapshot, profile)
-    messages = [{"role": "system", "content": system_text}] + _serialize_history(history)
+
+    # 7. История ДОПОЛНИТЕЛЬНО маскируется при формировании контекста —
+    #    защита от того, что в БД могло сохраниться что-то немаскированное
+    #    (старые сообщения до этого фикса, или новые типы ПДн).
+    serialized = _serialize_history(history, saved_name=user.first_name)
+
+    # 8. Если мы только что извлекли телефон — подскажем LLM системным сообщением,
+    #    чтобы она не просила его повторно.
+    if extracted_phone and pre_extract_phone(text):
+        serialized.append({
+            "role": "system",
+            "content": (
+                "Клиент только что прислал свой номер телефона. Он СОХРАНЁН на стороне "
+                "бота. НЕ нужно его повторно спрашивать. Если был ожидающий горячий лид — "
+                "вызови mark_hot_lead для финальной передачи в CRM. Не показывай номер "
+                "клиенту обратно."
+            ),
+        })
+
+    messages = [{"role": "system", "content": system_text}] + serialized
 
     # 6. Сам поход в LLM
     try:
@@ -93,12 +124,13 @@ async def handover_flow(bot: Bot, user: User) -> str:
     snapshot = await get_snapshot()
     state = _ToolState(bot=bot, user=user, profile=profile, snapshot=snapshot)
 
-    if not user.contact_phone and not user.tg_username:
-        # Контакта нет — нечего отправлять. Просим контакт.
+    # Менеджеру нужен телефон для звонка. Telegram-username не считаем достаточным:
+    # у клиента может быть закрытая возможность писать в TG, плюс менеджер обычно звонит.
+    if not user.contact_phone:
         return (
-            "Чтобы менеджер мог связаться, поделитесь, пожалуйста, телефоном или "
-            "разрешите написать в Telegram — для этого можно прислать любое сообщение, "
-            "и мы свяжемся с вами по нему."
+            "Чтобы менеджер мог позвонить, пришлите, пожалуйста, ваш номер телефона "
+            "сообщением — следующее ваше сообщение я сохраню как контакт. "
+            "Можно в любом удобном формате: +7..., 8..., с пробелами или без."
         )
 
     success = await _push_to_crm(state, reason="handover_button")
@@ -207,13 +239,15 @@ async def _t_update_profile(state: _ToolState, args: dict) -> Any:
     )
 
     phone_raw = args.get("contact_phone")
-    if phone_raw:
+    if phone_raw and phone_raw.strip() not in ("<phone>", ""):
+        # Запасной канал: если LLM откуда-то всё-таки увидела номер (не должна),
+        # сохраним. В нормальном flow телефон извлекается pre-extractor'ом из
+        # сообщения клиента ДО LLM — этот код не должен сработать.
         phone = _normalize_phone(phone_raw)
         if phone:
             await repo.set_contact_phone(state.user.tg_user_id, phone)
-            # Локальное состояние тоже подсветим — оно нужно для гард-проверки в mark_hot
             state.user.contact_phone = phone
-            logger.info("Saved contact_phone for tg_user={}", state.user.tg_user_id)
+            logger.warning("Phone arrived via LLM tool (unexpected after PII masking) for tg_user={}", state.user.tg_user_id)
 
     name_raw = args.get("first_name")
     if name_raw and name_raw.strip():
@@ -292,7 +326,9 @@ async def _push_to_crm(state: _ToolState, reason: str) -> bool:
     profile = state.profile
 
     history = await repo.get_recent_messages(user.tg_user_id)
-    history_text = _history_to_text(history)
+    # _history_to_text сам по себе берёт уже-маскированную историю из БД, но
+    # на всякий случай прогоняем ещё раз — двойная защита перед отправкой в OpenAI.
+    history_text = mask_message(_history_to_text(history), saved_name=user.first_name)
     profile_text = _profile_to_text(profile)
     summary = await llm.summarize_for_crm(history_text, profile_text)
 
@@ -374,12 +410,25 @@ def _compose_system(snapshot: KBSnapshot | None, profile: LeadProfile) -> str:
         f"{calendar_block}\n\n"
         f"# ПРОФИЛЬ КЛИЕНТА (что уже знаем)\n{profile_block}\n"
     )
-    if not is_within(moment, schedule, overrides):
+
+    if is_within(moment, schedule, overrides):
         extras += (
-            "\nЕсли клиент горячий или просит менеджера — называй конкретный ближайший "
-            "рабочий день и часы из блока КАЛЕНДАРЬ выше. Не пиши «понедельник» абстрактно — "
-            "пиши «понедельник, 11 мая, с 9:00 МСК» (брать из 'ближайшее рабочее окно'). "
-            "Не обещай мгновенный ответ человека вне рабочих часов."
+            "\n# КОГДА ПЕРЕДАЁШЬ В CRM (СЕЙЧАС РАБОЧЕЕ ВРЕМЯ)\n"
+            "После успешного mark_hot_lead / request_handover пиши клиенту: "
+            "«Передал заявку менеджеру, он свяжется в ближайшее время». "
+            "НЕ упоминай «рабочие часы», «менеджер ответит в Пн-Пт» и т.п. — "
+            "мы УЖЕ в рабочем времени, менеджер на связи прямо сейчас.\n"
+        )
+    else:
+        extras += (
+            "\n# КОГДА ПЕРЕДАЁШЬ В CRM (СЕЙЧАС НЕРАБОЧЕЕ ВРЕМЯ)\n"
+            "После успешного mark_hot_lead / request_handover пиши клиенту "
+            "конкретное время следующей связи. Используй ТОЧНУЮ строку из блока "
+            "КАЛЕНДАРЬ → «Ближайшее рабочее окно» (там уже посчитан день недели, "
+            "число и часы). Пример формулировки:\n"
+            "  «Передал заявку менеджеру. Свяжется в <строка из 'Ближайшее рабочее окно'>».\n"
+            "НЕ пиши «в ближайшие рабочие часы» без конкретики — клиенту это бесполезно. "
+            "НЕ обещай мгновенный ответ.\n"
         )
     return base + extras
 
@@ -550,11 +599,13 @@ def _next_working_window(
     return None
 
 
-def _serialize_history(history: list[Message]) -> list[dict]:
+def _serialize_history(history: list[Message], saved_name: str | None = None) -> list[dict]:
+    """Готовит историю для LLM. Дополнительно прогоняет маскирование на каждом сообщении —
+    защита от утечки ПДн в OpenAI, если в БД сохранилось что-то немаскированное."""
     out: list[dict] = []
     for m in history:
         if m.role in ("user", "assistant"):
-            out.append({"role": m.role, "content": m.content})
+            out.append({"role": m.role, "content": mask_message(m.content, saved_name=saved_name)})
     return out
 
 

@@ -29,11 +29,11 @@
       "settings": {
         "vnext": [
           {
-            "address": "non-ru-vps.example.com",
-            "port": 443,
+            "address": "194.87.54.138",
+            "port": 36450,
             "users": [
               {
-                "id": "ВСТАВЬ_СВОЙ_UUID_ПОЛЬЗОВАТЕЛЯ",
+                "id": "4fd8a9f8-c2f2-4338-ba12-25b6af8720fe",
                 "encryption": "none",
                 "flow": "xtls-rprx-vision"
               }
@@ -47,8 +47,8 @@
         "realitySettings": {
           "serverName": "www.microsoft.com",
           "fingerprint": "chrome",
-          "publicKey": "ВСТАВЬ_PUBLIC_KEY_REALITY",
-          "shortId": "ВСТАВЬ_SHORT_ID"
+          "publicKey": "",
+          "shortId": "9a"
         }
       }
     },
