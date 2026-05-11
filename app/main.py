@@ -9,7 +9,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from loguru import logger
 
-from app.bot.handlers import router
+from app.bot.handlers import group_router, router
 from app.config import settings
 from app.kb.cache import get_snapshot
 from app.state.db import init_db
@@ -47,7 +47,8 @@ async def main() -> None:
         session=session,
     )
     dp = Dispatcher()
-    dp.include_router(router)
+    dp.include_router(group_router)   # сначала логируем групповые апдейты и тихо игнорируем
+    dp.include_router(router)         # потом основной поток в личных чатах
 
     me = await bot.get_me()
     logger.info("Bot authorized as @{} (id={})", me.username, me.id)

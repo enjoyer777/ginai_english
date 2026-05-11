@@ -20,7 +20,36 @@ DEFAULT_DISCLAIMER = (
     "Все данные используем только чтобы помочь записаться на курс."
 )
 
+# Router для групп/каналов: бот не должен болтать с менеджерами как с клиентом.
+# Всё, что прилетело из групп, попадает сюда раньше main-роутера, логируется и
+# никуда дальше не идёт. Используется, чтобы заказчик мог легко найти chat_id
+# для MANAGERS_CHAT_ID — добавил бота в группу, написал любую команду или текст
+# (если включён privacy mode — нужны команды типа /start или mention @bot),
+# и chat_id появляется в логах.
+group_router = Router(name="group_logger")
+
+
+@group_router.message(F.chat.type.in_({"group", "supergroup", "channel"}))
+async def on_group_message(message: Message) -> None:
+    chat = message.chat
+    sender = message.from_user
+    sender_label = (
+        f"@{sender.username}" if sender and sender.username else
+        (sender.first_name if sender else "unknown")
+    )
+    logger.info(
+        "[GROUP] chat_id={} type={} title={!r} from={}: {!r}",
+        chat.id,
+        chat.type,
+        chat.title,
+        sender_label,
+        (message.text or message.caption or "<no text>")[:60],
+    )
+
+
+# Главный router работает ТОЛЬКО в личных чатах. Группы выше уже отфильтрованы.
 router = Router(name="main")
+router.message.filter(F.chat.type == "private")
 
 
 @router.message(CommandStart())
