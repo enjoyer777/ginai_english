@@ -295,7 +295,55 @@ curl -m 5 -sS "https://b24-e1y7cx.bitrix24.ru/rest/1/<TOKEN>/crm.deal.fields.jso
 
 ---
 
-## 9. Типовые проблемы
+## 9. Проверить, что ПДн не уходят в OpenAI
+
+Бот маскирует телефоны/email/имена перед отправкой в OpenAI (см. раздел 2.7 в [CUSTOMER_REPORT.md](CUSTOMER_REPORT.md)). Чтобы убедиться, что это работает:
+
+1. Напиши боту в Telegram любое сообщение с телефоном или email, например:
+   > Мой номер +79991234567
+2. На VPS посмотри лог:
+   ```bash
+   ssh onedash2-enjoyer777 "docker logs school-english-pro-bot --tail=20 | grep 'OpenAI'"
+   ```
+3. В строке вида:
+   ```
+   INFO  | app.dialog.engine:process_user_message:80 - User msg → OpenAI (tg_user=128657277): 'Мой номер <phone>'
+   ```
+   должно стоять **`<phone>`** вместо реальных цифр (или `<email>` вместо email, `<имя>` для сохранённого имени). Это то, что физически уходит в OpenAI.
+
+Если вместо токена видишь реальный номер — значит regex не зацепил формат, нужно расширить паттерн в [app/utils/pii_mask.py](app/utils/pii_mask.py).
+
+Для разового аудита всей истории в БД (поиск утечек по всем юзерам):
+
+```bash
+ssh onedash2-enjoyer777 'docker exec school-english-pro-bot python -c "
+import asyncio, aiosqlite, re
+from app.config import settings
+
+PHONE = re.compile(r\"(?<!\w)(?:\+\s*\d|8(?=[\s\-\(]?\d)|7(?=[\s\-\(]?\d))(?:[\s\-\(\)\.]*\d){9,14}(?!\w)\")
+EMAIL = re.compile(r\"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b\")
+
+async def main():
+    async with aiosqlite.connect(settings.sqlite_path) as db:
+        cur = await db.execute(\"SELECT id, role, content FROM messages WHERE role=\\\"user\\\" ORDER BY id DESC LIMIT 50\")
+        rows = await cur.fetchall()
+    leaks = 0
+    for id_, role, content in reversed(rows):
+        bad = bool(PHONE.search(content) or EMAIL.search(content))
+        marker = \"  !!!\" if bad else \"  OK \"
+        leaks += int(bad)
+        print(f\"{marker} #{id_}: {content[:120]}\")
+    print(f\"\\nУтечек ПДн: {leaks} из {len(rows)} сообщений\")
+
+asyncio.run(main())
+"'
+```
+
+Здоровый ответ: `Утечек ПДн: 0 из N сообщений`, и все строки начинаются с `OK`.
+
+---
+
+## 10. Типовые проблемы
 
 | Симптом | Где смотреть | Что делать |
 |---|---|---|
@@ -310,9 +358,9 @@ curl -m 5 -sS "https://b24-e1y7cx.bitrix24.ru/rest/1/<TOKEN>/crm.deal.fields.jso
 
 ---
 
-## 10. Тесты
+## 11. Тесты
 
-### 10.1 Автоматические юнит-тесты
+### 11.1 Автоматические юнит-тесты
 
 ```bash
 ssh onedash2-enjoyer777 "cd /home/enjoyer777/ginai_english && docker compose exec -T bot pytest -q tests/unit"
