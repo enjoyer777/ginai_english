@@ -216,9 +216,14 @@ async def _t_update_profile(state: _ToolState, args: dict) -> Any:
             logger.info("Saved contact_phone for tg_user={}", state.user.tg_user_id)
 
     name_raw = args.get("first_name")
-    if name_raw and not state.user.first_name:
-        # Заполняем имя, только если в Telegram-профиле его не было
-        state.user.first_name = name_raw.strip()[:64]
+    if name_raw and name_raw.strip():
+        # Клиент явно сказал, как к нему обращаться — это важнее, чем имя из TG-профиля.
+        # Перезаписываем И в БД, И в локальном state (нужно для последующего push_to_crm
+        # в том же сообщении).
+        cleaned_name = name_raw.strip()[:64]
+        await repo.set_first_name(state.user.tg_user_id, cleaned_name)
+        state.user.first_name = cleaned_name
+        logger.info("Saved first_name='{}' for tg_user={}", cleaned_name, state.user.tg_user_id)
 
     return {"ok": True, "profile": _profile_to_dict(state.profile)}
 

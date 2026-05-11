@@ -48,6 +48,17 @@ async def set_contact_phone(tg_user_id: int, phone: str) -> None:
         await db.commit()
 
 
+async def set_first_name(tg_user_id: int, first_name: str) -> None:
+    """Перезаписывает имя — используется когда клиент явно представился в диалоге.
+    Имя из Telegram-профиля при этом затирается (намеренно — клиент сказал, как обращаться)."""
+    async with get_connection() as db:
+        await db.execute(
+            "UPDATE users SET first_name = ?, updated_at = ? WHERE tg_user_id = ?",
+            (first_name, now(), tg_user_id),
+        )
+        await db.commit()
+
+
 async def get_user(tg_user_id: int) -> User | None:
     async with get_connection() as db:
         db.row_factory = aiosqlite.Row
