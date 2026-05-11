@@ -67,6 +67,8 @@ async def process_user_message(bot: Bot, user: User, text: str) -> str:
     #    в истории не будет повторяющихся номеров.
     text_for_history = mask_message(text, saved_name=user.first_name)
     await repo.append_message(user.tg_user_id, "user", text_for_history)
+    # Логируем именно маскированную версию — это и есть то, что улетает в OpenAI.
+    logger.info("User msg → OpenAI (tg_user={}): {!r}", user.tg_user_id, text_for_history)
 
     # 4. Готовим контекст для LLM
     snapshot = await get_snapshot()
