@@ -213,6 +213,15 @@ async def find_deal_by_user(tg_user_id: int) -> DealRef | None:
     )
 
 
+async def delete_deal_ref(tg_user_id: int) -> None:
+    """Удаляет локальную ссылку на сделку — используется, когда сделка в Битриксе
+    оказалась удалена (404 при попытке апдейта). После этого следующий hot lead
+    создаст новую сделку."""
+    async with get_connection() as db:
+        await db.execute("DELETE FROM deals WHERE tg_user_id = ?", (tg_user_id,))
+        await db.commit()
+
+
 async def save_deal_ref(tg_user_id: int, bitrix_deal_id: str, summary: str) -> None:
     ts = now()
     async with get_connection() as db:

@@ -336,11 +336,31 @@ async def _push_to_crm(state: _ToolState, reason: str) -> bool:
 
     try:
         existing = await repo.find_deal_by_user(user.tg_user_id)
+        deal_id: str | None = None
+
         if existing:
-            await bitrix.update_deal(existing.bitrix_deal_id, build_deal_update_payload(summary))
-            deal_id = existing.bitrix_deal_id
-            logger.info("Updated existing Bitrix deal {} for tg_user={}", deal_id, user.tg_user_id)
-        else:
+            try:
+                await bitrix.update_deal(
+                    existing.bitrix_deal_id, build_deal_update_payload(summary)
+                )
+                deal_id = existing.bitrix_deal_id
+                logger.info("Updated existing Bitrix deal {} for tg_user={}",
+                            deal_id, user.tg_user_id)
+            except BitrixError as e:
+                # Stale dedup reference: сделку удалили в UI Битрикса, локальная
+                # ссылка устарела. Чистим локальную запись и идём по пути создания.
+                if "not found" in str(e).lower():
+                    logger.warning(
+                        "Local deal_ref {} for tg_user={} points to deleted Bitrix deal — "
+                        "will create a new one",
+                        existing.bitrix_deal_id, user.tg_user_id,
+                    )
+                    await repo.delete_deal_ref(user.tg_user_id)
+                    deal_id = None  # fall through to create
+                else:
+                    raise
+
+        if deal_id is None:
             contact_id: str | None = None
             if user.contact_phone:
                 contact_id = await bitrix.find_contact_by_phone(user.contact_phone)
@@ -348,8 +368,12 @@ async def _push_to_crm(state: _ToolState, reason: str) -> bool:
                     contact_id = await bitrix.add_contact(build_contact_payload(user))
             else:
                 contact_id = await bitrix.add_contact(build_contact_payload(user))
-            deal_id = await bitrix.add_deal(build_deal_payload(user, profile, summary, contact_id))
-            logger.info("Created Bitrix deal {} for tg_user={} (reason={})", deal_id, user.tg_user_id, reason)
+            deal_id = await bitrix.add_deal(
+                build_deal_payload(user, profile, summary, contact_id)
+            )
+            logger.info("Created Bitrix deal {} for tg_user={} (reason={})",
+                        deal_id, user.tg_user_id, reason)
+
         await repo.save_deal_ref(user.tg_user_id, deal_id, summary)
     except BitrixError as e:
         logger.error("Bitrix push failed: {}", e)
